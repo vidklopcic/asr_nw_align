@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List
-
+from PIL import Image
 import nw_align_probs
 
 import numpy as np
@@ -62,14 +62,50 @@ if __name__ == '__main__':
     probs = np.load(open('test/podmelec.np', 'rb'))
     text = open('test/podmelec.txt', 'r', encoding='utf-8').read()
     asr_align = ASRNWAlign(probs, text)
-    score, aligned_text, aligned_probs = asr_align.align_global()
-    positions = asr_align.get_text_positions(aligned_text)
 
-    position = 0
-    for word in asr_align.clean_text.split(' '):
-        if not word.strip():
-            continue
-        start = positions[position]
-        position += len(word) + 1
-        end = positions[position - 1]
-        print(word, f'{start:.2f}-{end:.2f}')
+
+    def print_word_positions():
+        score, aligned_text, aligned_probs = asr_align.align_global()
+        positions = asr_align.get_text_positions(aligned_text)
+
+        position = 0
+        for word in asr_align.clean_text.split(' '):
+            if not word.strip():
+                continue
+            start = positions[position]
+            position += len(word) + 1
+            end = positions[position - 1]
+            print(word, f'{start:.2f}-{end:.2f}')
+
+
+    def plot_trace():
+        def draw_score_image(score: np.ndarray):
+            print('drawing image\n')
+            score = score.T
+            color = lambda x: (
+                255 if x == 1 else 0,
+                255 if x == 2 else 0,
+                255 if x == 3 else 0
+            )
+            print(f'0.00%')
+            image = Image.new('RGB', score.shape, color='black')
+            for x in range(score.shape[0]):
+                if x % 100 == 0:
+                    print(f'{100 * x / score.shape[0]:.2f}%')
+                for y in range(score.shape[1]):
+                    image.putpixel((x, y), color(score[x][y]))
+            return image
+
+        score, trace = nw_align_probs.gen_mat(
+            probs=asr_align.logprobs,
+            text=asr_align.tokens,
+            h_gap_penalty_for_len=asr_align._h_gap_penalty(),
+            v_gap_penalty_for_len=asr_align._v_gap_penalty(),
+            h_penalty_exempt=asr_align.config.space_char
+        )
+
+        draw_score_image(trace).save('trace.png')
+
+
+    # plot_trace()
+    print_word_positions()
