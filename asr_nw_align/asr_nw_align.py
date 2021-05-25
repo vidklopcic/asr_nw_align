@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Dict, List
 from PIL import Image
@@ -7,15 +8,16 @@ import numpy as np
 
 
 class ASRNWAlign:
-    def __init__(self, logprobs: np.ndarray, text: str, config: 'ASRNWAlignConfig' = None):
-        self.logprobs = logprobs.astype(np.float64)
+    def __init__(self, logprobs_and_errors: np.ndarray, text: str, config: 'ASRNWAlignConfig' = None):
+        self.logprobs = logprobs_and_errors[0].astype(np.float64)
+        self.frame_errors = logprobs_and_errors[1]
         self.text = text
         self.config = config or ASRNWAlignConfig(
             alphabet=[' ', 'a', 'b', 'c', 'č', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
                       'n', 'o', 'p', 'r', 's', 'š', 't', 'u', 'v', 'z', 'ž']
         )
         self.alphabet = self.config.alphabet
-        self.clean_text = ''.join([c for c in self.text.replace('\n', ' ').lower() if c in self.alphabet])
+        self.clean_text, self.clean_to_source = self.get_clean_text()
         self.char_to_token = {self.alphabet[i]: i for i in range(len(self.alphabet))}
         self.token_to_char = {i: self.alphabet[i] for i in range(len(self.alphabet))}
         self.tokens = np.array([self.char_to_token[c] for c in self.clean_text], dtype=np.int64)
@@ -39,7 +41,15 @@ class ASRNWAlign:
         )
 
     def get_text_positions(self, tokens):
-        return [p[1] * self.config.frame_ms / 1000.0 for p in tokens]
+        frame_error_i = 0
+        ms_positions = []
+        for _, frame_i in tokens:
+            while frame_error_i < len(self.frame_errors) and self.frame_errors[frame_error_i][0] < frame_i:
+                frame_error_i += 1
+            frame_error_i = min(len(self.frame_errors) - 1, frame_error_i)
+            frame_error = self.frame_errors[frame_error_i][1]
+            ms_positions.append((frame_i - frame_error) * self.config.frame_ms / 1000.0)
+        return ms_positions
 
     def _h_gap_penalty(self):
         gap = np.zeros((int(self.config.max_char_ms / self.config.frame_ms + 1)), dtype=np.float64)
@@ -49,19 +59,45 @@ class ASRNWAlign:
     def _v_gap_penalty(self):
         return np.array([-1000], dtype=np.float64)
 
+    def get_clean_text(self):
+        clean_to_source = {}
+        lower_text = self.text.lower().replace('\n', ' ')
+        offset = 0
+        clean_chars = []
+        for i in range(len(text)):
+            c = lower_text[i]
+            if c not in self.alphabet:
+                offset += 1
+                continue
+            clean_chars.append(c)
+            clean_to_source[i - offset] = i
+        return ''.join(clean_chars), clean_to_source
+
 
 @dataclass
 class ASRNWAlignConfig:
     alphabet: List[str]
-    frame_ms: float = 40.3  # todo - why .3? overlap..?
+    frame_ms: float = 40
     space_char: int = 0
     max_char_ms: int = 5000
 
 
 if __name__ == '__main__':
-    probs = np.load(open('test/podmelec.np', 'rb'))
-    text = open('test/podmelec.txt', 'r', encoding='utf-8').read()
-    asr_align = ASRNWAlign(probs, text)
+    FN = 'podmelec'
+    data = np.load(open(f'test/{FN}.np', 'rb'), allow_pickle=True)
+    text = open(f'test/{FN}.txt', 'r', encoding='utf-8').read()
+    asr_align = ASRNWAlign(data, text)
+
+
+    def save_for_web():
+        score, aligned_text, aligned_probs = asr_align.align_global()
+        with open(f'test/{FN}_aligned.json', 'w', encoding='utf-8') as f:
+            json.dump({
+                'text': asr_align.text,
+                'text_clean': asr_align.clean_text,
+                'clean_to_source': asr_align.clean_to_source,
+                'clean_text_positions_s': asr_align.get_text_positions(aligned_text)
+            }, f)
 
 
     def print_word_positions():
@@ -108,4 +144,5 @@ if __name__ == '__main__':
 
 
     # plot_trace()
-    print_word_positions()
+    # print_word_positions()
+    save_for_web()
