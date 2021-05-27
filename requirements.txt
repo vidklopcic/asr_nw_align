@@ -1,2 +1,4 @@
 nw-align-probs@ git+https://github.com/vidklopcic/nw_align_probs
 Pillow
+matplotlib
+numpy

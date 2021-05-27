@@ -3,8 +3,10 @@ from dataclasses import dataclass
 from typing import Dict, List
 from PIL import Image
 import nw_align_probs
-
+import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.axes._axes as axes
+import matplotlib.figure as figure
 
 
 class ASRNWAlign:
@@ -140,9 +142,54 @@ if __name__ == '__main__':
             h_penalty_exempt=asr_align.config.space_char
         )
 
-        draw_score_image(trace).save('trace.png')
+        draw_score_image(trace).save(f'test/{FN}_trace.png')
+
+
+    def plot_alignment_vs_greedy(start_ms=24000, end_ms=29000):
+        greedy = json.load(open('test/podmelec_greedy.json', 'r'))
+        greedy_chunk = [
+            ((greedy[1][0][i] - start_ms) / asr_align.config.frame_ms, asr_align.char_to_token[greedy[0][0][i]]) for i
+            in range(len(greedy[1][0])) if
+            start_ms < greedy[1][0][i] < end_ms]
+
+        start_frame = start_ms // asr_align.config.frame_ms
+        end_frame = end_ms // asr_align.config.frame_ms
+        data_chunk = data[0][start_frame:end_frame]
+
+        fig, axs = plt.subplots(2, figsize=(10, 6))  # type:figure.Figure, axes.Axes
+        ax1, ax2 = axs
+        ax1.imshow(data_chunk.T, cmap='viridis')
+        ax2.imshow(data_chunk.T, cmap='Greys')
+
+        start, end = ax2.get_xlim()
+        ticks = np.arange(start, end, (end - start) // 10)
+        ax2.set_xticks(ticks)
+        ax2.set_xticklabels([(t * asr_align.config.frame_ms + start_ms) / 1000 for t in ticks])
+        ax1.set_xticks(ticks)
+        ax1.set_xticklabels([(t * asr_align.config.frame_ms + start_ms) / 1000 for t in ticks])
+
+        start, end = ax2.get_ylim()
+        ticks = np.arange(end, start)
+        ax2.set_yticks(ticks)
+        ax2.set_yticklabels(['space'] + asr_align.config.alphabet[1:] + ['blank'])
+        ax2.yaxis.set_tick_params(labelsize=8)
+        ax1.set_yticks(ticks)
+        ax1.set_yticklabels(['space'] + asr_align.config.alphabet[1:] + ['blank'])
+        ax1.yaxis.set_tick_params(labelsize=8)
+
+        ax2.scatter(*zip(*greedy_chunk), s=23, facecolor='none', edgecolor='greenyellow', label='greedy', marker='s')
+
+        score, aligned_text, aligned_probs = asr_align.align_global()
+        aligned_text_chunk = [(c[1] - start_ms / 40 - 1, c[0]) for c in aligned_text if
+                              start_ms / 40 < c[1] < end_ms / 40]
+        ax2.scatter(*zip(*aligned_text_chunk), s=23, c='red', label='NW aligned', marker='x')
+
+        fig.legend()
+        fig.show()
+        fig.savefig('test/greedy_nw_logprobs.pdf')
 
 
     # plot_trace()
     # print_word_positions()
-    save_for_web()
+    # save_for_web()
+    plot_alignment_vs_greedy()
