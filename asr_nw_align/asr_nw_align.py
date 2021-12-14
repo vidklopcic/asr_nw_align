@@ -10,13 +10,22 @@ import matplotlib.figure as figure
 
 
 class ASRNWAlign:
-    def __init__(self, logprobs_and_errors: np.ndarray, text: str, config: 'ASRNWAlignConfig' = None):
+    def __init__(self, logprobs_and_errors: np.ndarray, text: str, config: 'ASRNWAlignConfig' = None,
+                 fix_frame_errors=True):
         self.logprobs = logprobs_and_errors[0].astype(np.float64)
-        self.frame_errors = logprobs_and_errors[1]
+        if fix_frame_errors:
+            self.frame_errors = [[0, 0]]
+            fes = logprobs_and_errors[1]
+            for i in range(1, len(fes)):
+                de = (fes[i][1] - fes[i - 1][1]) * 1.5
+                self.frame_errors.append([fes[i][0], self.frame_errors[-1][1] + de])
+        else:
+            self.frame_errors = logprobs_and_errors[1]
+
         self.text = text
         self.config = config or ASRNWAlignConfig(
-            alphabet=[' ', 'a', 'b', 'c', 'č', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-                      'n', 'o', 'p', 'r', 's', 'š', 't', 'u', 'v', 'z', 'ž']
+            alphabet=[' ', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'r',
+                      's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'č', 'š', 'ž']
         )
         self.alphabet = self.config.alphabet
         self.clean_text, self.clean_to_source = self.get_clean_text()
@@ -30,7 +39,8 @@ class ASRNWAlign:
             text=self.tokens,
             h_gap_penalty_for_len=self._h_gap_penalty(),
             v_gap_penalty_for_len=self._v_gap_penalty(),
-            h_penalty_exempt=self.config.space_char
+            h_penalty_exempt=self.config.space_char,
+            init_h_gap=False
         )
 
     def align_anchor(self):
@@ -39,7 +49,8 @@ class ASRNWAlign:
             text=self.tokens,
             h_gap_penalty_for_len=self._h_gap_penalty(),
             v_gap_penalty_for_len=self._v_gap_penalty(),
-            h_penalty_exempt=-1
+            h_penalty_exempt=-1,
+            init_h_gap=False
         )
 
     def get_text_positions(self, tokens):
@@ -55,7 +66,7 @@ class ASRNWAlign:
 
     def _h_gap_penalty(self):
         gap = np.zeros((int(self.config.max_char_ms / self.config.frame_ms + 1)), dtype=np.float64)
-        gap[-1] = 0
+        gap[-1] = -1e9
         return gap
 
     def _v_gap_penalty(self):
@@ -85,14 +96,15 @@ class ASRNWAlignConfig:
 
 
 if __name__ == '__main__':
-    FN = 'podmelec'
-    data = np.load(open(f'test/{FN}.np', 'rb'), allow_pickle=True)
+    FN = '173250742_174462327'
+    data = np.load(f'test/{FN}.np', allow_pickle=True)
     text = open(f'test/{FN}.txt', 'r', encoding='utf-8').read()
     asr_align = ASRNWAlign(data, text)
 
 
     def save_for_web():
-        score, aligned_text, aligned_probs = asr_align.align_global()
+        score, aligned_text, aligned_probs = asr_align.align_anchor()
+        print('aligned with score:', score)
         with open(f'test/{FN}_aligned.json', 'w', encoding='utf-8') as f:
             json.dump({
                 'text': asr_align.text,
@@ -103,7 +115,8 @@ if __name__ == '__main__':
 
 
     def print_word_positions():
-        score, aligned_text, aligned_probs = asr_align.align_global()
+        score, aligned_text, aligned_probs = asr_align.align_anchor()
+        print('aligned with score:', score / len(asr_align.clean_text))
         positions = asr_align.get_text_positions(aligned_text)
 
         position = 0
@@ -112,7 +125,7 @@ if __name__ == '__main__':
                 continue
             start = positions[position]
             position += len(word) + 1
-            end = positions[position - 1]
+            end = positions[position - 2]
             print(word, f'{start:.2f}-{end:.2f}')
 
 
@@ -139,13 +152,14 @@ if __name__ == '__main__':
             text=asr_align.tokens,
             h_gap_penalty_for_len=asr_align._h_gap_penalty(),
             v_gap_penalty_for_len=asr_align._v_gap_penalty(),
-            h_penalty_exempt=asr_align.config.space_char
+            h_penalty_exempt=-1,
+            init_h_gap=False
         )
 
         draw_score_image(trace).save(f'test/{FN}_trace.png')
 
 
-    def plot_alignment_vs_greedy(start_ms=24000, end_ms=29000):
+    def plot_alignment_vs_greedy(start_ms=5000, end_ms=10000):
         greedy = json.load(open('test/podmelec_greedy.json', 'r'))
         greedy_chunk = [
             ((greedy[1][0][i] - start_ms) / asr_align.config.frame_ms, asr_align.char_to_token[greedy[0][0][i]]) for i
@@ -171,6 +185,7 @@ if __name__ == '__main__':
         start, end = ax2.get_ylim()
         ticks = np.arange(end, start)
         ax2.set_yticks(ticks)
+        print(['space'] + asr_align.config.alphabet[1:] + ['blank'])
         ax2.set_yticklabels(['space'] + asr_align.config.alphabet[1:] + ['blank'])
         ax2.yaxis.set_tick_params(labelsize=8)
         ax1.set_yticks(ticks)
@@ -189,7 +204,38 @@ if __name__ == '__main__':
         fig.savefig('test/greedy_nw_logprobs.pdf')
 
 
+    def plot_logprobs(start_ms=0, end_ms=7000):
+        start_frame = start_ms // asr_align.config.frame_ms
+        end_frame = end_ms // asr_align.config.frame_ms
+        data_chunk = data[0][start_frame:end_frame]
+
+        fig, ax = plt.subplots(1, figsize=(10, 6))  # type:figure.Figure, axes.Axes
+        ax.imshow(data_chunk.T, cmap='viridis')
+
+        start, end = ax.get_xlim()
+        ticks = np.arange(start, end, (end - start) // 10)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([(t * asr_align.config.frame_ms + start_ms) / 1000 for t in ticks])
+
+        start, end = ax.get_ylim()
+        ticks = np.arange(end, start)
+        ax.set_yticks(ticks)
+        ax.set_yticklabels(['space'] + asr_align.config.alphabet[1:] + ['blank'])
+        ax.yaxis.set_tick_params(labelsize=8)
+
+        score, aligned_text, aligned_probs = asr_align.align_global()
+
+        aligned_text_chunk = [(c[1] - start_ms / 40 - 1, c[0]) for c in aligned_text if
+                              start_ms / 40 < c[1] < end_ms / 40]
+        if aligned_text_chunk:
+            ax.scatter(*zip(*aligned_text_chunk), s=23, c='red', label='NW aligned', marker='x')
+
+        fig.legend()
+        fig.show()
+
+
     # plot_trace()
-    # print_word_positions()
+    print_word_positions()
     # save_for_web()
-    plot_alignment_vs_greedy()
+    # plot_alignment_vs_greedy()
+    # plot_logprobs()
